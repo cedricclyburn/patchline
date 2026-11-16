@@ -1,0 +1,18 @@
+{
+  "name": "supplier-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Internal supplier parts lookup and quote requests for the aerospace supply chain.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --test-reporter=tap"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "4.17.1",
+    "lodash": "4.17.20"
+  }
+}

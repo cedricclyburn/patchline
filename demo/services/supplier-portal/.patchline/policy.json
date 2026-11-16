@@ -1,0 +1,7 @@
+{
+  "owner": "supply-chain-eng",
+  "riskClass": "LOW",
+  "rationale": "Internal read-mostly portal for supplier part lookups and quote requests; no flight data, no write path into ERP.",
+  "approval": "auto_approve",
+  "test": "npm test"
+}

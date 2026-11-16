@@ -1,0 +1,7 @@
+{
+  "owner": "flight-software",
+  "riskClass": "HIGH",
+  "rationale": "Ingests mission profiles used by flight ops; malformed parsing affects launch-day tooling.",
+  "approval": "needs_approval",
+  "test": "pytest -q"
+}

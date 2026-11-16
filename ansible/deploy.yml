@@ -1,0 +1,212 @@
+---
+# Patchline deploy: build -> replace container -> health check -> roll back on failure.
+#
+# Required extra vars:
+#   service     container name and image repository suffix (e.g. supplier-portal)
+#   source_dir  absolute path of the checked-out service (contains Containerfile)
+#   port        host port published to the container's 8080
+#   git_sha     commit being deployed; used as the image tag
+# Optional:
+#   health_path (/healthz), health_retries (15), health_delay (2),
+#   container_port (8080), result_file (path to also write the JSON result to)
+#
+# Always prints exactly one line containing PATCHLINE_RESULT={...json...}.
+- name: Deploy a Patchline-managed service
+  hosts: localhost
+  gather_facts: false
+  vars:
+    health_path: /healthz
+    health_retries: 15
+    health_delay: 2
+    container_port: 8080
+    image_repo: "localhost/patchline/{{ service }}"
+    image: "{{ image_repo }}:{{ git_sha }}"
+    health_url: "http://localhost:{{ port }}{{ health_path }}"
+    deploy_status: pending
+    deploy_error: ""
+    previous_image: null
+
+  tasks:
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - service is defined and service is match('^[a-z0-9][a-z0-9_.-]*$')
+          - source_dir is defined and source_dir | length > 0
+          - port is defined and (port | int) > 0
+          - git_sha is defined and git_sha is match('^[A-Za-z0-9_.-]+$')
+        fail_msg: "deploy.yml needs -e service=<name> source_dir=<path> port=<host port> git_sha=<sha>"
+        quiet: true
+
+    - name: Record the image the running container uses (rollback target)
+      containers.podman.podman_container_info:
+        name: "{{ service }}"
+      register: current_info
+      failed_when: false
+
+    - name: Remember previous image
+      ansible.builtin.set_fact:
+        previous_image: "{{ current_info.containers[0].ImageName | default(current_info.containers[0].Config.Image, true) }}"
+      when: (current_info.containers | default([])) | length > 0
+
+    - name: Build, replace, verify
+      block:
+        - name: Build image from Containerfile
+          containers.podman.podman_image:
+            name: "{{ image_repo }}"
+            tag: "{{ git_sha }}"
+            path: "{{ source_dir }}"
+            build:
+              file: "{{ source_dir }}/Containerfile"
+              format: oci
+              extra_args: "--label=patchline.git_sha={{ git_sha }}"
+            force: true
+          register: build_result
+
+        - name: Mark build done
+          ansible.builtin.set_fact:
+            deploy_status: deploying
+
+        - name: Replace container with the new image
+          containers.podman.podman_container:
+            name: "{{ service }}"
+            image: "{{ image }}"
+            state: started
+            recreate: true
+            restart_policy: always
+            publish:
+              - "{{ port }}:{{ container_port }}"
+            env:
+              PORT: "{{ container_port }}"
+            labels:
+              patchline.service: "{{ service }}"
+              patchline.git_sha: "{{ git_sha }}"
+
+        - name: Health check new container
+          ansible.builtin.uri:
+            url: "{{ health_url }}"
+            status_code: 200
+            timeout: 3
+          register: health
+          until: health.status == 200
+          retries: "{{ health_retries | int }}"
+          delay: "{{ health_delay | int }}"
+
+        - name: Mark healthy
+          ansible.builtin.set_fact:
+            deploy_status: healthy
+
+      rescue:
+        - name: Capture failure reason
+          ansible.builtin.set_fact:
+            deploy_error: >-
+              {{ (ansible_failed_task.name | default('unknown task')) ~ ': ' ~
+                 ((ansible_failed_result.stderr_lines | default([]) | select | list | last)
+                  | default(ansible_failed_result.msg | default('failed'), true)
+                  | string | truncate(300)) }}
+
+        # failed_phase is set once and never changed: `when` on a block is re-evaluated
+        # for every task inside it, so it must not depend on deploy_status, which the
+        # tasks below update.
+        - name: Classify failure
+          ansible.builtin.set_fact:
+            failed_phase: "{{ 'build' if deploy_status == 'pending' else 'deploy' }}"
+
+        - name: Build failed; running container was not touched
+          ansible.builtin.set_fact:
+            deploy_status: build_failed
+          when: failed_phase == 'build'
+
+        - name: Collect logs from the failed container
+          ansible.builtin.command: podman logs --tail 20 {{ service }}
+          register: failed_logs
+          changed_when: false
+          failed_when: false
+          when: failed_phase == 'deploy'
+
+        - name: Show failed container logs
+          ansible.builtin.debug:
+            msg: "{{ (failed_logs.stdout_lines + failed_logs.stderr_lines) | unique }}"
+          when: failed_phase == 'deploy'
+
+        - name: Roll back
+          when: failed_phase == 'deploy'
+          block:
+            - name: No previous image to roll back to; remove the broken container
+              when: previous_image is none
+              block:
+                - name: Remove broken container
+                  containers.podman.podman_container:
+                    name: "{{ service }}"
+                    state: absent
+                - name: Mark failed without rollback
+                  ansible.builtin.set_fact:
+                    deploy_status: failed_no_previous
+
+            - name: Restore previous image
+              when: previous_image is not none
+              block:
+                - name: Mark rollback in progress
+                  ansible.builtin.set_fact:
+                    deploy_status: rollback_failed
+
+                - name: Recreate container from previous image
+                  containers.podman.podman_container:
+                    name: "{{ service }}"
+                    image: "{{ previous_image }}"
+                    state: started
+                    recreate: true
+                    restart_policy: always
+                    publish:
+                      - "{{ port }}:{{ container_port }}"
+                    env:
+                      PORT: "{{ container_port }}"
+                    labels:
+                      patchline.service: "{{ service }}"
+                      patchline.rolled_back_from: "{{ git_sha }}"
+
+                - name: Health check restored container
+                  ansible.builtin.uri:
+                    url: "{{ health_url }}"
+                    status_code: 200
+                    timeout: 3
+                  register: rollback_health
+                  until: rollback_health.status == 200
+                  retries: "{{ health_retries | int }}"
+                  delay: "{{ health_delay | int }}"
+
+                - name: Mark rolled back
+                  ansible.builtin.set_fact:
+                    deploy_status: rolled_back
+
+      always:
+        - name: Build result
+          ansible.builtin.set_fact:
+            patchline_result:
+              status: "{{ deploy_status }}"
+              service: "{{ service }}"
+              image: "{{ image }}"
+              previous: "{{ previous_image }}"
+              port: "{{ port | int }}"
+              git_sha: "{{ git_sha }}"
+              health_url: "{{ health_url }}"
+              error: "{{ deploy_error if deploy_error | length > 0 else none }}"
+
+        - name: Write result file
+          ansible.builtin.copy:
+            content: "{{ patchline_result | to_json }}\n"
+            dest: "{{ result_file }}"
+            mode: "0644"
+          when: result_file is defined and result_file | length > 0
+          failed_when: false
+
+        - name: PATCHLINE_RESULT
+          ansible.builtin.debug:
+            msg: "PATCHLINE_RESULT={{ patchline_result | to_json(separators=[',', ':']) }}"
+
+    - name: Fail when the new version is not serving
+      ansible.builtin.fail:
+        msg: >-
+          Deploy of {{ image }} failed ({{ deploy_status }}).
+          {{ 'Previous image ' ~ previous_image ~ ' restored and healthy.' if deploy_status == 'rolled_back' else '' }}
+          {{ deploy_error }}
+      when: deploy_status != 'healthy'
