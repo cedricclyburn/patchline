@@ -503,10 +503,6 @@ main { padding: 28px var(--gutter) 72px; max-width: 1680px; }
 }
 .attempt:first-child { margin-top: 4px; padding-top: 0; border-top: 0; }
 
-/* reviewer */
-.review-verdict { font-size: 22px; font-stretch: 118%; font-weight: 850; color: var(--model); line-height: 1.2; }
-.review-model { margin-left: 12px; font-size: 13px; font-stretch: 100%; font-weight: 500; color: var(--graphite); }
-.review-notes { margin-top: 8px; font-size: 15px; max-width: 70ch; }
 
 /* ---- responsive -------------------------------------------------------- */
 

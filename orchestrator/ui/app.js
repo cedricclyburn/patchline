@@ -440,15 +440,6 @@ function renderFindings(r) {
   </table></div>`;
 }
 
-function renderReview(r) {
-  if (!r.review) return `<p class="none">${r.reached >= 4 ? "The reviewer model is reading the diff." : "Runs after verification passes."}</p>`;
-  const v = r.review;
-  return `<div class="review ${esc(v.verdict)}">
-    <p class="review-verdict">${v.verdict === "approve" ? "Approves" : "Raises concerns"}<span class="review-model">${esc(v.model)}</span></p>
-    <p class="review-notes">${esc(v.notes)}</p>
-  </div>`;
-}
-
 function renderChanges(r) {
   if (!r.changes) return `<p class="none">${r.reached >= 3 ? "Measured from the lockfile once verification passes." : "No patch yet."}</p>`;
   return `<div class="table-wrap"><table class="grid changes">
@@ -518,17 +509,13 @@ function detailSkeleton() {
           <div class="tabs" role="tablist" aria-label="Agent" id="d-tabs"></div>
           <div class="log" id="d-transcript" role="tabpanel" tabindex="0"></div>
         </section>
-        <section class="panel panel-model" aria-labelledby="h-review">
-          <div class="panel-head"><h3 id="h-review"><i class="model-mark" aria-hidden="true"></i>Reviewer verdict</h3><p class="panel-src">A different model reads the diff</p></div>
-          <div id="d-review"></div>
-        </section>
         <section class="panel" aria-labelledby="h-changes">
           <div class="panel-head"><h3 id="h-changes">Dependency changes</h3><p class="panel-src">Measured from the lockfile diff</p></div>
           <div id="d-changes"></div>
         </section>
       </div>
     </div>`;
-  for (const id of ["d-head", "d-errors", "d-findings", "d-changes", "d-checks", "d-review", "d-gate", "d-tabs", "d-transcript"]) lastHtml.delete($(id));
+  for (const id of ["d-head", "d-errors", "d-findings", "d-changes", "d-checks", "d-gate", "d-tabs", "d-transcript"]) lastHtml.delete($(id));
 }
 
 function renderDetail(r) {
@@ -550,7 +537,6 @@ function renderDetail(r) {
   put($("d-checks"), renderChecks(r));
   put($("d-gate"), renderGate(r));
   put($("d-findings"), renderFindings(r));
-  put($("d-review"), renderReview(r));
   put($("d-changes"), renderChanges(r));
   const role = pickRole(r);
   put($("d-tabs"), renderTabs(r, role));
